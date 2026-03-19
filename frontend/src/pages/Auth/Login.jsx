@@ -102,6 +102,20 @@ const Login = () => {
                         </button>
                     </form>
 
+                    {/* Demo Credentials Info */}
+                    <div className="mt-4 p-3 rounded-lg border border-cyan-500/30" style={{ background: 'rgba(6, 182, 212, 0.08)' }}>
+                        <p className="text-xs text-cyan-400 font-semibold mb-1">🔑 Demo Credentials</p>
+                        <p className="text-xs text-gray-400">Email: <span className="text-cyan-300">snehashaw1525@gmail.com</span></p>
+                        <p className="text-xs text-gray-400">Password: <span className="text-cyan-300">sneha25</span></p>
+                        <button
+                            type="button"
+                            onClick={() => setFormData({ email: 'snehashaw1525@gmail.com', password: 'sneha25' })}
+                            className="mt-2 text-xs text-cyan-400 hover:text-cyan-300 underline transition-colors"
+                        >
+                            Auto-fill demo credentials
+                        </button>
+                    </div>
+
                     <p className="mt-6 text-center text-gray-400">
                         Don't have an account?{' '}
                         <Link to="/register" className="text-primary hover:text-primary-light transition-colors">

@@ -30,6 +30,10 @@ app.use('/api/', limiter);
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/predict', require('./routes/prediction'));
+app.use('/api/vitals', require('./routes/vitals'));
+app.use('/api/image-analysis', require('./routes/imageAnalysis'));
+app.use('/api/analytics', require('./routes/analytics'));
+app.use('/api/lab', require('./routes/lab'));
 
 // Health check
 app.get('/health', (req, res) => {

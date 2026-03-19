@@ -7,6 +7,9 @@ const axios = require('axios');
 
 const ML_API_URL = process.env.ML_API_URL || 'http://localhost:5001';
 
+// In-memory store for demo/offline mode
+const inMemoryPredictions = [];
+
 // @route   POST /api/predict
 // @desc    Get health prediction
 // @access  Private
@@ -48,24 +51,46 @@ router.post('/', protect, [
             mlResults = createMockPrediction(symptoms, duration, age, gender, comorbidities);
         }
 
-        // Save prediction to database
-        const prediction = await Prediction.create({
-            user: req.user.id,
-            symptoms,
-            symptomDuration: duration,
-            patientInfo: {
-                age,
-                gender,
-                comorbidities: comorbidities || ['none']
-            },
-            disease: mlResults.disease,
-            severity: mlResults.severity,
-            riskTimeline: mlResults.riskTimeline,
-            triage: mlResults.triage,
-            explainability: mlResults.explainability,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
+        // Try to save prediction to database, fallback to in-memory if DB unavailable
+        let prediction;
+        try {
+            prediction = await Prediction.create({
+                user: req.user.id,
+                symptoms,
+                symptomDuration: duration,
+                patientInfo: {
+                    age,
+                    gender,
+                    comorbidities: comorbidities || ['none']
+                },
+                disease: mlResults.disease,
+                severity: mlResults.severity,
+                riskTimeline: mlResults.riskTimeline,
+                triage: mlResults.triage,
+                explainability: mlResults.explainability,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
+        } catch (dbError) {
+            console.warn('⚠️  DB save failed, returning in-memory prediction:', dbError.message);
+            // Return prediction as in-memory object when DB is unavailable
+            prediction = {
+                _id: 'pred_' + Date.now(),
+                user: req.user.id,
+                symptoms,
+                symptomDuration: duration,
+                patientInfo: { age, gender, comorbidities: comorbidities || ['none'] },
+                disease: mlResults.disease,
+                severity: mlResults.severity,
+                riskTimeline: mlResults.riskTimeline,
+                triage: mlResults.triage,
+                explainability: mlResults.explainability,
+                createdAt: new Date().toISOString()
+            };
+            
+            // Store in memory for immediate access in current session
+            inMemoryPredictions.unshift(prediction);
+        }
 
         res.status(200).json({
             success: true,
@@ -91,12 +116,24 @@ router.get('/history', protect, async (req, res) => {
         const limit = parseInt(req.query.limit) || 10;
         const skip = (page - 1) * limit;
 
-        const predictions = await Prediction.find({ user: req.user.id })
-            .sort({ createdAt: -1 })
-            .limit(limit)
-            .skip(skip);
+        let predictions;
+        let total;
 
-        const total = await Prediction.countDocuments({ user: req.user.id });
+        try {
+            predictions = await Prediction.find({ user: req.user.id })
+                .sort({ createdAt: -1 })
+                .limit(limit)
+                .skip(skip);
+
+            total = await Prediction.countDocuments({ user: req.user.id });
+        } catch (dbError) {
+            console.warn('⚠️  DB history fetch failed, falling back to in-memory store');
+            
+            // Filter in-memory predictions for current user
+            const userPredictions = inMemoryPredictions.filter(p => p.user === req.user.id);
+            total = userPredictions.length;
+            predictions = userPredictions.slice(skip, skip + limit);
+        }
 
         res.status(200).json({
             success: true,
@@ -105,11 +142,12 @@ router.get('/history', protect, async (req, res) => {
                 page,
                 limit,
                 total,
-                pages: Math.ceil(total / limit)
+                pages: Math.ceil(total / limit) || 1
             }
         });
 
     } catch (error) {
+        console.error('History fetch error:', error);
         res.status(500).json({
             success: false,
             message: 'Error fetching prediction history',
@@ -123,10 +161,17 @@ router.get('/history', protect, async (req, res) => {
 // @access  Private
 router.get('/:id', protect, async (req, res) => {
     try {
-        const prediction = await Prediction.findOne({
-            _id: req.params.id,
-            user: req.user.id
-        });
+        let prediction;
+        
+        try {
+            prediction = await Prediction.findOne({
+                _id: req.params.id,
+                user: req.user.id
+            });
+        } catch (dbError) {
+            console.warn('⚠️  DB single fetch failed, checking in-memory store');
+            prediction = inMemoryPredictions.find(p => p._id === req.params.id && p.user === req.user.id);
+        }
 
         if (!prediction) {
             return res.status(404).json({
@@ -141,6 +186,7 @@ router.get('/:id', protect, async (req, res) => {
         });
 
     } catch (error) {
+        console.error('Prediction fetch error:', error);
         res.status(500).json({
             success: false,
             message: 'Error fetching prediction',

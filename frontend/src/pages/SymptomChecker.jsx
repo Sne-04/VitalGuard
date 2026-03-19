@@ -57,8 +57,10 @@ const SymptomChecker = () => {
                 comorbidities: user.medicalHistory?.comorbidities || ['none']
             });
 
-            // Navigate to results page with prediction ID
-            navigate(`/results/${response.data.data._id}`);
+            // Navigate to results page with prediction data
+            navigate(`/results/${response.data.data._id}`, {
+                state: { prediction: response.data.data }
+            });
         } catch (err) {
             setError(err.response?.data?.message || 'Failed to get prediction');
         } finally {

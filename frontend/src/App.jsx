@@ -8,6 +8,10 @@ import Register from './pages/Auth/Register';
 import SymptomChecker from './pages/SymptomChecker';
 import Results from './pages/Results';
 import History from './pages/History';
+import IoTVitals from './pages/IoTVitals';
+import ImageAnalysis from './pages/ImageAnalysis';
+import Analytics from './pages/Analytics';
+import LabReportAnalyzer from './pages/LabAnalyzer/LabReportAnalyzer';
 import './index.css';
 
 // Protected Route Component
@@ -24,6 +28,7 @@ function AppRoutes() {
                 <Route path="/" element={<Home />} />
                 <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />
+                <Route path="/analytics" element={<Analytics />} />
                 <Route
                     path="/check"
                     element={
@@ -45,6 +50,30 @@ function AppRoutes() {
                     element={
                         <ProtectedRoute>
                             <History />
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
+                    path="/iot-vitals"
+                    element={
+                        <ProtectedRoute>
+                            <IoTVitals />
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
+                    path="/image-analysis"
+                    element={
+                        <ProtectedRoute>
+                            <ImageAnalysis />
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
+                    path="/lab"
+                    element={
+                        <ProtectedRoute>
+                            <LabReportAnalyzer />
                         </ProtectedRoute>
                     }
                 />

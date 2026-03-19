@@ -72,6 +72,18 @@ router.post('/register', [
     }
 });
 
+// Demo credentials for quick access
+const DEMO_EMAIL = 'snehashaw1525@gmail.com';
+const DEMO_PASSWORD = 'sneha25';
+const DEMO_USER = {
+    id: '65f1a2b3c4d5e6f7a8b9c0d1',
+    name: 'Sneha Shaw',
+    email: DEMO_EMAIL,
+    age: 25,
+    gender: 'Female',
+    medicalHistory: { comorbidities: ['none'], allergies: [], currentMedications: [] }
+};
+
 // @route   POST /api/auth/login
 // @desc    Login user
 // @access  Public
@@ -90,6 +102,17 @@ router.post('/login', [
         }
 
         const { email, password } = req.body;
+
+        // Demo credentials bypass - allows login without MongoDB user
+        if (email === DEMO_EMAIL && password === DEMO_PASSWORD) {
+            const token = generateToken(DEMO_USER.id);
+            return res.status(200).json({
+                success: true,
+                message: 'Login successful (Demo Account)',
+                token,
+                user: DEMO_USER
+            });
+        }
 
         // Check if user exists
         const user = await User.findOne({ email }).select('+password');
@@ -143,6 +166,14 @@ router.post('/login', [
 // @access  Private
 router.get('/me', require('../middleware/auth').protect, async (req, res) => {
     try {
+        // Demo user bypass - return demo user directly without MongoDB lookup
+        if (req.user.id === DEMO_USER.id) {
+            return res.status(200).json({
+                success: true,
+                user: req.user
+            });
+        }
+
         const user = await User.findById(req.user.id);
 
         res.status(200).json({

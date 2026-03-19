@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Line, Bar } from 'react-chartjs-2';
 import {
@@ -15,7 +15,10 @@ import {
     Filler
 } from 'chart.js';
 import api from '../services/api';
-import { Activity, AlertCircle, Calendar, TrendingUp, ArrowLeft } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import PreConsultationReport from '../components/PreConsultationReport';
+import { Activity, AlertCircle, Calendar, TrendingUp, ArrowLeft, Beaker } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 // Register ChartJS components
 ChartJS.register(
@@ -33,12 +36,20 @@ ChartJS.register(
 const Results = () => {
     const { id } = useParams();
     const navigate = useNavigate();
+    const location = useLocation();
+    const { user } = useAuth();
     const [prediction, setPrediction] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
 
     useEffect(() => {
-        fetchPrediction();
+        // Use prediction from navigation state if available (works without MongoDB)
+        if (location.state?.prediction) {
+            setPrediction(location.state.prediction);
+            setLoading(false);
+        } else {
+            fetchPrediction();
+        }
     }, [id]);
 
     const fetchPrediction = async () => {
@@ -330,12 +341,21 @@ const Results = () => {
                     >
                         New Health Check
                     </button>
-                    <button
-                        onClick={() => window.print()}
-                        className="btn-secondary"
+                    <PreConsultationReport prediction={prediction} user={user} />
+                </div>
+
+                <div className="mt-8 text-center pt-8 border-t border-white/5">
+                    <p className="text-gray-400 mb-4 font-medium flex items-center justify-center gap-2">
+                        <Beaker className="w-4 h-4 text-primary" />
+                        Have a lab report? Upload it for deeper insights
+                    </p>
+                    <Link
+                        to="/lab"
+                        className="btn-secondary px-8 py-3 rounded-xl hover:bg-white/10 transition-all inline-flex items-center gap-2"
                     >
-                        Print Results
-                    </button>
+                        Go to Lab Report Analyzer
+                        <ChevronRight className="w-4 h-4" />
+                    </Link>
                 </div>
             </motion.div>
         </div>

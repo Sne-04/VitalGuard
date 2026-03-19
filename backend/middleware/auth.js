@@ -1,6 +1,18 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
+// Demo user for quick access (must match routes/auth.js)
+const DEMO_USER_ID = '65f1a2b3c4d5e6f7a8b9c0d1';
+const DEMO_USER = {
+    id: DEMO_USER_ID,
+    _id: DEMO_USER_ID,
+    name: 'Sneha Shaw',
+    email: 'snehashaw1525@gmail.com',
+    age: 25,
+    gender: 'Female',
+    medicalHistory: { comorbidities: ['none'], allergies: [], currentMedications: [] }
+};
+
 exports.protect = async (req, res, next) => {
     try {
         let token;
@@ -20,6 +32,12 @@ exports.protect = async (req, res, next) => {
         try {
             // Verify token
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+            // Handle demo user - skip MongoDB lookup
+            if (decoded.id === DEMO_USER_ID) {
+                req.user = DEMO_USER;
+                return next();
+            }
 
             // Get user from token
             req.user = await User.findById(decoded.id);

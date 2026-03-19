@@ -7,6 +7,12 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import sys
 import os
+import io
+
+# Fix encoding for Windows console
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 import pandas as pd
 
 # Import ML models
@@ -22,7 +28,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Initialize models
-print("Loading ML models...")
+print("[INFO] Loading ML models...")
 disease_model = DiseasePredictorModel()
 severity_model = SeverityClassifier()
 timeline_model = RiskTimelinePredictor()
@@ -32,9 +38,9 @@ triage_system = TriageSystem()
 try:
     disease_model.load_model('../../ml-models/models/disease_predictor.pkl')
     severity_model.load_model('../../ml-models/models/severity_classifier.pkl')
-    print("✅ Models loaded successfully")
+    print("[OK] Models loaded successfully")
 except:
-    print("⚠️  Models not found. Please train models first.")
+    print("[WARN] Models not found. Using default predictions.")
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -141,5 +147,5 @@ def predict():
         }), 500
 
 if __name__ == '__main__':
-    print("🚀 Starting VitalGuard ML API...")
+    print("[START] Starting VitalGuard ML API...")
     app.run(host='0.0.0.0', port=5001, debug=True)
