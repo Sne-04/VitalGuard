@@ -3,7 +3,7 @@ const multer = require('multer');
 const pdfParse = require('pdf-parse');
 // Some versions/environments require .default
 const parsePDF = typeof pdfParse === 'function' ? pdfParse : pdfParse.default;
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Anthropic = require('@anthropic-ai/sdk');
 const { protect } = require('../middleware/auth');
 const LabReport = require('../models/LabReport');
 
@@ -20,7 +20,7 @@ const upload = multer({
   }
 });
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 router.post('/analyze', protect, upload.single('report'), async (req, res) => {
   try {
@@ -38,8 +38,6 @@ router.post('/analyze', protect, upload.single('report'), async (req, res) => {
       });
     }
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-    
     const systemPrompt = `You are a medical lab report analyzer. The user has uploaded a lab report.
 Extract ALL test values and return ONLY a valid JSON object.
 No preamble, no markdown, no explanation outside the JSON.
@@ -77,11 +75,16 @@ Return this exact structure:
   "overallInsight": "2-3 sentence plain English summary of the overall report"
 }`;
 
-    const prompt = `${systemPrompt}\n\nLab Report Text:\n${extractedText}`;
-    
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const rawText = response.text();
+    const message = await anthropic.messages.create({
+      model: 'claude-3-5-sonnet-20241022',
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: [
+        { role: 'user', content: `Lab Report Text:\n${extractedText}` }
+      ],
+    });
+
+    const rawText = message.content[0].text;
     
     // Clean JSON response
     const cleanJson = rawText.replace(/```json|```/g, '').trim();
