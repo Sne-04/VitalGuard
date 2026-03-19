@@ -777,3 +777,6 @@ For questions, issues, or suggestions:
 ---
 
 **© 2026 VitalGuard AI. All Rights Reserved.**
+
+## Recent Updates
+- **AI Migration**: Successfully migrated from Google Gemini to Anthropic Claude 3.5 Sonnet for enhanced diagnostic accuracy.
