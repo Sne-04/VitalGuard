@@ -17,7 +17,7 @@ import {
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import PreConsultationReport from '../components/PreConsultationReport';
-import { Activity, AlertCircle, Calendar, TrendingUp, ArrowLeft, Beaker } from 'lucide-react';
+import { Activity, AlertCircle, Calendar, TrendingUp, ArrowLeft, Beaker, ChevronRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 // Register ChartJS components

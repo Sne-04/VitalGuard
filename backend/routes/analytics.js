@@ -1,35 +1,56 @@
 const express = require('express');
 const router = express.Router();
-const Prediction = require('../models/Prediction');
+const supabase = require('../config/supabase');
 
 // @route   GET /api/analytics/overview
-// @desc    Get overall analytics summary
 // @access  Public
 router.get('/overview', async (req, res) => {
     try {
-        const totalPredictions = await Prediction.countDocuments();
-
-        const severityDist = await Prediction.aggregate([
-            { $group: { _id: '$severity.level', count: { $sum: 1 } } }
-        ]);
-
-        const topDiseases = await Prediction.aggregate([
-            { $group: { _id: '$disease.name', count: { $sum: 1 } } },
-            { $sort: { count: -1 } },
-            { $limit: 5 }
-        ]);
+        const { count: totalPredictions } = await supabase
+            .from('predictions')
+            .select('*', { count: 'exact', head: true });
 
         const last30Days = new Date();
         last30Days.setDate(last30Days.getDate() - 30);
 
-        const recentCount = await Prediction.countDocuments({ createdAt: { $gte: last30Days } });
+        const { count: recentCount } = await supabase
+            .from('predictions')
+            .select('*', { count: 'exact', head: true })
+            .gte('created_at', last30Days.toISOString());
+
+        // Severity distribution — fetch all and group in JS
+        const { data: allPreds } = await supabase
+            .from('predictions')
+            .select('severity');
+
+        const severityMap = {};
+        (allPreds || []).forEach(p => {
+            const level = p.severity?.level || 'Unknown';
+            severityMap[level] = (severityMap[level] || 0) + 1;
+        });
+        const severityDistribution = Object.entries(severityMap).map(([_id, count]) => ({ _id, count }));
+
+        // Top diseases
+        const { data: diseasePreds } = await supabase
+            .from('predictions')
+            .select('disease');
+
+        const diseaseMap = {};
+        (diseasePreds || []).forEach(p => {
+            const name = p.disease?.name || 'Unknown';
+            diseaseMap[name] = (diseaseMap[name] || 0) + 1;
+        });
+        const topDiseases = Object.entries(diseaseMap)
+            .map(([_id, count]) => ({ _id, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 5);
 
         res.status(200).json({
             success: true,
             data: {
-                totalPredictions,
-                recentPredictions: recentCount,
-                severityDistribution: severityDist,
+                totalPredictions: totalPredictions || 0,
+                recentPredictions: recentCount || 0,
+                severityDistribution,
                 topDiseases,
                 lastUpdated: new Date().toISOString()
             }
@@ -41,7 +62,6 @@ router.get('/overview', async (req, res) => {
 });
 
 // @route   GET /api/analytics/trends
-// @desc    Get symptom and disease trends by date range
 // @access  Public
 router.get('/trends', async (req, res) => {
     try {
@@ -49,34 +69,42 @@ router.get('/trends', async (req, res) => {
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - days);
 
-        // Daily prediction counts
-        const dailyTrends = await Prediction.aggregate([
-            { $match: { createdAt: { $gte: startDate } } },
-            {
-                $group: {
-                    _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-                    count: { $sum: 1 }
-                }
-            },
-            { $sort: { _id: 1 } }
-        ]);
+        const { data: preds } = await supabase
+            .from('predictions')
+            .select('created_at, symptoms, disease')
+            .gte('created_at', startDate.toISOString());
 
-        // Top symptoms
-        const topSymptoms = await Prediction.aggregate([
-            { $match: { createdAt: { $gte: startDate } } },
-            { $unwind: '$symptoms' },
-            { $group: { _id: '$symptoms', count: { $sum: 1 } } },
-            { $sort: { count: -1 } },
-            { $limit: 10 }
-        ]);
+        // Daily trends
+        const dailyMap = {};
+        const symptomMap = {};
+        const diseaseDistMap = {};
 
-        // Disease distribution
-        const diseaseDistribution = await Prediction.aggregate([
-            { $match: { createdAt: { $gte: startDate } } },
-            { $group: { _id: '$disease.name', count: { $sum: 1 } } },
-            { $sort: { count: -1 } },
-            { $limit: 10 }
-        ]);
+        (preds || []).forEach(p => {
+            const day = p.created_at.slice(0, 10);
+            dailyMap[day] = (dailyMap[day] || 0) + 1;
+
+            const symptoms = Array.isArray(p.symptoms) ? p.symptoms : [];
+            symptoms.forEach(s => {
+                symptomMap[s] = (symptomMap[s] || 0) + 1;
+            });
+
+            const name = p.disease?.name || 'Unknown';
+            diseaseDistMap[name] = (diseaseDistMap[name] || 0) + 1;
+        });
+
+        const dailyTrends = Object.entries(dailyMap)
+            .map(([_id, count]) => ({ _id, count }))
+            .sort((a, b) => a._id.localeCompare(b._id));
+
+        const topSymptoms = Object.entries(symptomMap)
+            .map(([_id, count]) => ({ _id, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 10);
+
+        const diseaseDistribution = Object.entries(diseaseDistMap)
+            .map(([_id, count]) => ({ _id, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 10);
 
         res.status(200).json({
             success: true,
@@ -94,37 +122,39 @@ router.get('/trends', async (req, res) => {
 });
 
 // @route   GET /api/analytics/severity-distribution
-// @desc    Get severity level distribution
 // @access  Public
 router.get('/severity-distribution', async (req, res) => {
     try {
-        const distribution = await Prediction.aggregate([
-            {
-                $group: {
-                    _id: '$severity.level',
-                    count: { $sum: 1 },
-                    avgConfidence: { $avg: '$severity.confidence' }
-                }
-            },
-            { $sort: { count: -1 } }
-        ]);
+        const { data: preds } = await supabase
+            .from('predictions')
+            .select('severity, triage');
 
-        const triageDist = await Prediction.aggregate([
-            {
-                $group: {
-                    _id: '$triage.level',
-                    count: { $sum: 1 }
-                }
-            },
-            { $sort: { count: -1 } }
-        ]);
+        const severityMap = {};
+        const triageMap = {};
+
+        (preds || []).forEach(p => {
+            const level = p.severity?.level || 'Unknown';
+            if (!severityMap[level]) severityMap[level] = { count: 0, totalConf: 0 };
+            severityMap[level].count++;
+            severityMap[level].totalConf += p.severity?.confidence || 0;
+
+            const tLevel = p.triage?.level || 'Unknown';
+            triageMap[tLevel] = (triageMap[tLevel] || 0) + 1;
+        });
+
+        const severityDistribution = Object.entries(severityMap).map(([_id, v]) => ({
+            _id,
+            count: v.count,
+            avgConfidence: v.count ? v.totalConf / v.count : 0
+        }));
+
+        const triageDistribution = Object.entries(triageMap)
+            .map(([_id, count]) => ({ _id, count }))
+            .sort((a, b) => b.count - a.count);
 
         res.status(200).json({
             success: true,
-            data: {
-                severityDistribution: distribution,
-                triageDistribution: triageDist
-            }
+            data: { severityDistribution, triageDistribution }
         });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Error fetching distribution', error: error.message });

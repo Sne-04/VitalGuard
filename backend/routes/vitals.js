@@ -1,11 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
-const Vitals = require('../models/Vitals');
 const { protect } = require('../middleware/auth');
+const supabase = require('../config/supabase');
 
 // @route   POST /api/vitals
-// @desc    Save vitals reading
 // @access  Private
 router.post('/', protect, [
     body('heartRate').isFloat({ min: 30, max: 250 }).withMessage('Heart rate must be between 30-250 BPM'),
@@ -28,18 +27,24 @@ router.post('/', protect, [
             status = 'warning';
         }
 
-        const vitals = await Vitals.create({
-            user: req.user.id,
-            heartRate,
-            spo2,
-            temperature,
-            bloodPressure: bloodPressure || { systolic: 120, diastolic: 80 },
-            steps: steps || 0,
-            device: device || 'generic_sensor',
-            status
-        });
+        const { data, error } = await supabase
+            .from('vitals')
+            .insert({
+                user_id: req.user.id,
+                heart_rate: heartRate,
+                spo2,
+                temperature,
+                blood_pressure: bloodPressure || { systolic: 120, diastolic: 80 },
+                steps: steps || 0,
+                device: device || 'generic_sensor',
+                status
+            })
+            .select()
+            .single();
 
-        res.status(201).json({ success: true, data: vitals });
+        if (error) throw error;
+
+        res.status(201).json({ success: true, data: mapVitals(data) });
     } catch (error) {
         console.error('Vitals save error:', error);
         res.status(500).json({ success: false, message: 'Error saving vitals', error: error.message });
@@ -47,31 +52,58 @@ router.post('/', protect, [
 });
 
 // @route   GET /api/vitals/latest
-// @desc    Get latest vitals for user
 // @access  Private
 router.get('/latest', protect, async (req, res) => {
     try {
-        const vitals = await Vitals.findOne({ user: req.user.id }).sort({ createdAt: -1 });
-        res.status(200).json({ success: true, data: vitals });
+        const { data, error } = await supabase
+            .from('vitals')
+            .select('*')
+            .eq('user_id', req.user.id)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+
+        res.status(200).json({ success: true, data: data ? mapVitals(data) : null });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Error fetching vitals', error: error.message });
     }
 });
 
 // @route   GET /api/vitals/history
-// @desc    Get vitals history
 // @access  Private
 router.get('/history', protect, async (req, res) => {
     try {
         const limit = parseInt(req.query.limit) || 50;
-        const vitals = await Vitals.find({ user: req.user.id })
-            .sort({ createdAt: -1 })
+
+        const { data, error } = await supabase
+            .from('vitals')
+            .select('*')
+            .eq('user_id', req.user.id)
+            .order('created_at', { ascending: false })
             .limit(limit);
 
-        res.status(200).json({ success: true, data: vitals, count: vitals.length });
+        if (error) throw error;
+
+        res.status(200).json({ success: true, data: (data || []).map(mapVitals), count: data?.length || 0 });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Error fetching vitals history', error: error.message });
     }
 });
+
+function mapVitals(row) {
+    return {
+        _id: row.id,
+        id: row.id,
+        user: row.user_id,
+        heartRate: row.heart_rate,
+        spo2: row.spo2,
+        temperature: row.temperature,
+        bloodPressure: row.blood_pressure,
+        steps: row.steps,
+        device: row.device,
+        status: row.status,
+        createdAt: row.created_at
+    };
+}
 
 module.exports = router;

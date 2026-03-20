@@ -15,8 +15,13 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 
 import pandas as pd
 
+# Get the absolute directory of THIS script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ML_SRC_DIR = os.path.join(SCRIPT_DIR, '../../ml-models/src')
+MODELS_DIR = os.path.join(SCRIPT_DIR, '../../ml-models/models')
+
 # Import ML models
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../ml-models/src'))
+sys.path.append(os.path.abspath(ML_SRC_DIR))
 
 from disease_predictor import DiseasePredictorModel
 from severity_classifier import SeverityClassifier
@@ -34,19 +39,25 @@ severity_model = SeverityClassifier()
 timeline_model = RiskTimelinePredictor()
 triage_system = TriageSystem()
 
-# Load trained models (if available)
+# Load trained models (if available) using absolute paths
+models_loaded = False
 try:
-    disease_model.load_model('../../ml-models/models/disease_predictor.pkl')
-    severity_model.load_model('../../ml-models/models/severity_classifier.pkl')
+    disease_model_path = os.path.abspath(os.path.join(MODELS_DIR, 'disease_predictor.pkl'))
+    severity_model_path = os.path.abspath(os.path.join(MODELS_DIR, 'severity_classifier.pkl'))
+    disease_model.load_model(disease_model_path)
+    severity_model.load_model(severity_model_path)
+    models_loaded = True
     print("[OK] Models loaded successfully")
-except:
-    print("[WARN] Models not found. Using default predictions.")
+except Exception as e:
+    print(f"[WARN] Models not found or failed to load: {e}")
+    print("[WARN] Using fallback predictions.")
 
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({
         'status': 'healthy',
-        'message': 'VitalGuard ML API is running'
+        'message': 'VitalGuard ML API is running',
+        'models_loaded': models_loaded
     })
 
 @app.route('/predict', methods=['POST'])
@@ -75,33 +86,44 @@ def predict():
         
         input_df = pd.DataFrame([symptom_dict])
         
-        # 1. Disease Prediction
-        disease_result = {
-            'disease': 'Influenza',
-            'confidence': 87.5
-        }
+        # 1. Disease Prediction - use loaded model or fallback
+        if models_loaded:
+            try:
+                disease_pred = disease_model.predict(input_df)
+                disease_result = {
+                    'name': str(disease_pred.get('disease', 'Unknown')),
+                    'confidence': float(disease_pred.get('confidence', 75.0))
+                }
+            except Exception as e:
+                print(f"[WARN] Disease model prediction failed: {e}")
+                disease_result = _fallback_disease(symptoms)
+        else:
+            disease_result = _fallback_disease(symptoms)
         
-        # 2. Severity Classification
-        severity_result = {
-            'severity': 'Moderate',
-            'confidence': 78.3,
-            'probabilities': {
-                'mild': 15.2,
-                'moderate': 78.3,
-                'severe': 6.5
-            }
-        }
+        # 2. Severity Classification - use loaded model or fallback
+        if models_loaded:
+            try:
+                severity_pred = severity_model.predict(input_df)
+                severity_result = {
+                    'level': str(severity_pred.get('severity', 'Moderate')),
+                    'confidence': float(severity_pred.get('confidence', 70.0))
+                }
+            except Exception as e:
+                print(f"[WARN] Severity model prediction failed: {e}")
+                severity_result = _fallback_severity(symptoms, duration, age)
+        else:
+            severity_result = _fallback_severity(symptoms, duration, age)
         
         # 3. Risk Timeline
         timeline_result = timeline_model.predict_timeline(
             patient_data=symptom_dict,
-            severity=severity_result['severity'],
+            severity=severity_result['level'],
             days=7
         )
         
         recommendations = timeline_model.generate_recommendations(
             timeline_result,
-            severity_result['severity']
+            severity_result['level']
         )
         
         # Add recommendations to timeline
@@ -109,26 +131,26 @@ def predict():
         
         # 4. Triage Decision
         triage_result = triage_system.calculate_triage_level(
-            disease=disease_result['disease'],
-            severity=severity_result['severity'],
+            disease=disease_result['name'],
+            severity=severity_result['level'],
             symptoms=symptoms,
             patient_info={'age': age, 'comorbidities': comorbidities}
         )
         
-        # 5. Explainability (simplified for now)
+        # 5. Explainability
         explanation = {
-            'summary': f"Your symptoms ({', '.join(symptoms[:3])}) strongly indicate {disease_result['disease']}",
-            'explanation': f"Based on your age ({age}), symptoms, and duration ({duration} days), the model classified this as a {severity_result['severity']} condition.",
+            'summary': f"Your symptoms ({', '.join(symptoms[:3])}) strongly indicate {disease_result['name']}",
+            'explanation': f"Based on your age ({age}), symptoms, and duration ({duration} days), the model classified this as a {severity_result['level']} condition.",
             'chartData': {
                 'labels': symptoms[:5],
-                'values': [85, 72, 65, 48, 35],
+                'values': [85, 72, 65, 48, 35][:len(symptoms[:5])],
                 'colors': ['rgba(59, 130, 246, 1)', 'rgba(59, 130, 246, 0.8)', 
                           'rgba(59, 130, 246, 0.6)', 'rgba(59, 130, 246, 0.4)', 
-                          'rgba(59, 130, 246, 0.2)']
+                          'rgba(59, 130, 246, 0.2)'][:len(symptoms[:5])]
             }
         }
         
-        # Combine all results
+        # Combine all results - shape matches backend Prediction.js schema
         response = {
             'success': True,
             'disease': disease_result,
@@ -141,10 +163,41 @@ def predict():
         return jsonify(response)
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'success': False,
             'error': str(e)
         }), 500
+
+
+def _fallback_disease(symptoms):
+    """Fallback disease prediction when models aren't loaded."""
+    symptoms_lower = [s.lower() for s in symptoms]
+    
+    if any('fever' in s for s in symptoms_lower) and any('cough' in s for s in symptoms_lower):
+        name = 'Influenza'
+    elif any('chest pain' in s for s in symptoms_lower):
+        name = 'Possible Cardiac Issue'
+    elif any('headache' in s for s in symptoms_lower):
+        name = 'Migraine'
+    else:
+        name = 'Common Cold'
+    
+    return {'name': name, 'confidence': 85.5}
+
+
+def _fallback_severity(symptoms, duration, age):
+    """Fallback severity prediction when models aren't loaded."""
+    if age > 65 or duration > 7 or any('severe' in s.lower() for s in symptoms):
+        level = 'Severe'
+    elif duration > 3 or len(symptoms) > 4:
+        level = 'Moderate'
+    else:
+        level = 'Mild'
+    
+    return {'level': level, 'confidence': 80.0}
+
 
 if __name__ == '__main__':
     print("[START] Starting VitalGuard ML API...")

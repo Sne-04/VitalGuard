@@ -1,17 +1,16 @@
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
-const Prediction = require('../models/Prediction');
 const { protect } = require('../middleware/auth');
+const supabase = require('../config/supabase');
 const axios = require('axios');
 
 const ML_API_URL = process.env.ML_API_URL || 'http://localhost:5001';
 
-// In-memory store for demo/offline mode
+// In-memory store for demo/offline mode (when no user row exists in DB for demo user)
 const inMemoryPredictions = [];
 
 // @route   POST /api/predict
-// @desc    Get health prediction
 // @access  Private
 router.post('/', protect, [
     body('symptoms').isArray({ min: 1 }).withMessage('Please provide at least one symptom'),
@@ -22,10 +21,7 @@ router.post('/', protect, [
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
-            return res.status(400).json({
-                success: false,
-                errors: errors.array()
-            });
+            return res.status(400).json({ success: false, errors: errors.array() });
         }
 
         const { symptoms, duration, age, gender, comorbidities } = req.body;
@@ -39,43 +35,22 @@ router.post('/', protect, [
                 age,
                 gender,
                 comorbidities: comorbidities || ['none']
-            }, {
-                timeout: 30000 // 30 second timeout
-            });
-
+            }, { timeout: 30000 });
             mlResults = response.data;
         } catch (mlError) {
             console.error('ML API Error:', mlError.message);
-
-            // Fallback: Return mock data if ML API is unavailable
             mlResults = createMockPrediction(symptoms, duration, age, gender, comorbidities);
         }
 
-        // Try to save prediction to database, fallback to in-memory if DB unavailable
+        // Check if demo user — store in-memory
+        const DEMO_USER_ID = '65f1a2b3c4d5e6f7a8b9c0d1';
+        const isDemo = req.user.id === DEMO_USER_ID;
+
         let prediction;
-        try {
-            prediction = await Prediction.create({
-                user: req.user.id,
-                symptoms,
-                symptomDuration: duration,
-                patientInfo: {
-                    age,
-                    gender,
-                    comorbidities: comorbidities || ['none']
-                },
-                disease: mlResults.disease,
-                severity: mlResults.severity,
-                riskTimeline: mlResults.riskTimeline,
-                triage: mlResults.triage,
-                explainability: mlResults.explainability,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
-        } catch (dbError) {
-            console.warn('⚠️  DB save failed, returning in-memory prediction:', dbError.message);
-            // Return prediction as in-memory object when DB is unavailable
+        if (isDemo) {
             prediction = {
                 _id: 'pred_' + Date.now(),
+                id: 'pred_' + Date.now(),
                 user: req.user.id,
                 symptoms,
                 symptomDuration: duration,
@@ -87,115 +62,149 @@ router.post('/', protect, [
                 explainability: mlResults.explainability,
                 createdAt: new Date().toISOString()
             };
-            
-            // Store in memory for immediate access in current session
             inMemoryPredictions.unshift(prediction);
+        } else {
+            // Save to Supabase
+            const { data, error } = await supabase
+                .from('predictions')
+                .insert({
+                    user_id: req.user.id,
+                    symptoms,
+                    symptom_duration: duration,
+                    patient_info: { age, gender, comorbidities: comorbidities || ['none'] },
+                    disease: mlResults.disease,
+                    severity: mlResults.severity,
+                    risk_timeline: mlResults.riskTimeline,
+                    triage: mlResults.triage,
+                    explainability: mlResults.explainability,
+                    ip_address: req.ip,
+                    user_agent: req.headers['user-agent']
+                })
+                .select()
+                .single();
+
+            if (error) {
+                console.warn('⚠️  DB save failed, using in-memory:', error.message);
+                prediction = {
+                    _id: 'pred_' + Date.now(),
+                    id: 'pred_' + Date.now(),
+                    user: req.user.id,
+                    symptoms,
+                    symptomDuration: duration,
+                    patientInfo: { age, gender, comorbidities: comorbidities || ['none'] },
+                    disease: mlResults.disease,
+                    severity: mlResults.severity,
+                    riskTimeline: mlResults.riskTimeline,
+                    triage: mlResults.triage,
+                    explainability: mlResults.explainability,
+                    createdAt: new Date().toISOString()
+                };
+                inMemoryPredictions.unshift(prediction);
+            } else {
+                prediction = mapPrediction(data);
+            }
         }
 
-        res.status(200).json({
-            success: true,
-            data: prediction
-        });
-
+        res.status(200).json({ success: true, data: prediction });
     } catch (error) {
         console.error('Prediction error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Error generating prediction',
-            error: error.message
-        });
+        res.status(500).json({ success: false, message: 'Error generating prediction', error: error.message });
     }
 });
 
 // @route   GET /api/predict/history
-// @desc    Get user's prediction history
 // @access  Private
 router.get('/history', protect, async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
-        const skip = (page - 1) * limit;
+        const from = (page - 1) * limit;
+        const to = from + limit - 1;
 
-        let predictions;
-        let total;
+        const DEMO_USER_ID = '65f1a2b3c4d5e6f7a8b9c0d1';
+        const isDemo = req.user.id === DEMO_USER_ID;
 
-        try {
-            predictions = await Prediction.find({ user: req.user.id })
-                .sort({ createdAt: -1 })
-                .limit(limit)
-                .skip(skip);
+        let predictions, total;
 
-            total = await Prediction.countDocuments({ user: req.user.id });
-        } catch (dbError) {
-            console.warn('⚠️  DB history fetch failed, falling back to in-memory store');
-            
-            // Filter in-memory predictions for current user
-            const userPredictions = inMemoryPredictions.filter(p => p.user === req.user.id);
-            total = userPredictions.length;
-            predictions = userPredictions.slice(skip, skip + limit);
+        if (isDemo) {
+            const userPreds = inMemoryPredictions.filter(p => p.user === req.user.id);
+            total = userPreds.length;
+            predictions = userPreds.slice(from, to + 1);
+        } else {
+            const { data, error, count } = await supabase
+                .from('predictions')
+                .select('*', { count: 'exact' })
+                .eq('user_id', req.user.id)
+                .order('created_at', { ascending: false })
+                .range(from, to);
+
+            if (error) throw error;
+            predictions = (data || []).map(mapPrediction);
+            total = count || 0;
         }
 
         res.status(200).json({
             success: true,
             data: predictions,
-            pagination: {
-                page,
-                limit,
-                total,
-                pages: Math.ceil(total / limit) || 1
-            }
+            pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 }
         });
-
     } catch (error) {
         console.error('History fetch error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Error fetching prediction history',
-            error: error.message
-        });
+        res.status(500).json({ success: false, message: 'Error fetching prediction history', error: error.message });
     }
 });
 
 // @route   GET /api/predict/:id
-// @desc    Get single prediction
 // @access  Private
 router.get('/:id', protect, async (req, res) => {
     try {
+        const { id } = req.params;
+        const DEMO_USER_ID = '65f1a2b3c4d5e6f7a8b9c0d1';
+        const isDemo = req.user.id === DEMO_USER_ID;
+
         let prediction;
-        
-        try {
-            prediction = await Prediction.findOne({
-                _id: req.params.id,
-                user: req.user.id
-            });
-        } catch (dbError) {
-            console.warn('⚠️  DB single fetch failed, checking in-memory store');
-            prediction = inMemoryPredictions.find(p => p._id === req.params.id && p.user === req.user.id);
+        if (isDemo || id.startsWith('pred_')) {
+            prediction = inMemoryPredictions.find(p => (p._id === id || p.id === id) && p.user === req.user.id);
+        } else {
+            const { data, error } = await supabase
+                .from('predictions')
+                .select('*')
+                .eq('id', id)
+                .eq('user_id', req.user.id)
+                .single();
+            if (error) throw error;
+            prediction = mapPrediction(data);
         }
 
         if (!prediction) {
-            return res.status(404).json({
-                success: false,
-                message: 'Prediction not found'
-            });
+            return res.status(404).json({ success: false, message: 'Prediction not found' });
         }
 
-        res.status(200).json({
-            success: true,
-            data: prediction
-        });
-
+        res.status(200).json({ success: true, data: prediction });
     } catch (error) {
         console.error('Prediction fetch error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Error fetching prediction',
-            error: error.message
-        });
+        res.status(500).json({ success: false, message: 'Error fetching prediction', error: error.message });
     }
 });
 
-// Helper function for mock predictions when ML API is unavailable
+// Map Supabase row to frontend-expected shape
+function mapPrediction(row) {
+    return {
+        _id: row.id,
+        id: row.id,
+        user: row.user_id,
+        symptoms: row.symptoms,
+        symptomDuration: row.symptom_duration,
+        patientInfo: row.patient_info,
+        disease: row.disease,
+        severity: row.severity,
+        riskTimeline: row.risk_timeline,
+        triage: row.triage,
+        explainability: row.explainability,
+        createdAt: row.created_at
+    };
+}
+
 function createMockPrediction(symptoms, duration, age, gender, comorbidities) {
     const disease = determineDiseaseFromSymptoms(symptoms);
     const severity = determineSeverity(symptoms, duration, age);
@@ -208,11 +217,7 @@ function createMockPrediction(symptoms, duration, age, gender, comorbidities) {
         })),
         peak_risk_day: severity === 'Severe' ? 7 : 3,
         trend: severity === 'Severe' ? 'Increasing' : 'Stable',
-        recommendations: [
-            '💊 Take prescribed medications',
-            '🏥 Monitor symptoms daily',
-            '📞 Contact doctor if symptoms worsen'
-        ]
+        recommendations: ['💊 Take prescribed medications', '🏥 Monitor symptoms daily', '📞 Contact doctor if symptoms worsen']
     };
 
     const triage = {
@@ -234,33 +239,24 @@ function createMockPrediction(symptoms, duration, age, gender, comorbidities) {
             explanation: 'The model analyzed your symptoms and patient information.',
             chartData: {
                 labels: symptoms.slice(0, 5),
-                values: [85, 70, 60, 45, 30],
-                colors: ['rgba(59, 130, 246, 1)', 'rgba(59, 130, 246, 0.8)', 'rgba(59, 130, 246, 0.6)']
+                values: [85, 70, 60, 45, 30].slice(0, symptoms.slice(0, 5).length),
+                colors: ['rgba(59, 130, 246, 1)', 'rgba(59, 130, 246, 0.8)', 'rgba(59, 130, 246, 0.6)', 'rgba(59, 130, 246, 0.4)', 'rgba(59, 130, 246, 0.2)'].slice(0, symptoms.slice(0, 5).length)
             }
         }
     };
 }
 
 function determineDiseaseFromSymptoms(symptoms) {
-    const symptomsLower = symptoms.map(s => s.toLowerCase());
-
-    if (symptomsLower.some(s => s.includes('fever')) && symptomsLower.some(s => s.includes('cough'))) {
-        return 'Influenza';
-    } else if (symptomsLower.some(s => s.includes('chest pain'))) {
-        return 'Possible Cardiac Issue';
-    } else if (symptomsLower.some(s => s.includes('headache'))) {
-        return 'Migraine';
-    }
-
+    const s = symptoms.map(x => x.toLowerCase());
+    if (s.some(x => x.includes('fever')) && s.some(x => x.includes('cough'))) return 'Influenza';
+    if (s.some(x => x.includes('chest pain'))) return 'Possible Cardiac Issue';
+    if (s.some(x => x.includes('headache'))) return 'Migraine';
     return 'Common Cold';
 }
 
 function determineSeverity(symptoms, duration, age) {
-    if (age > 65 || duration > 7 || symptoms.some(s => s.toLowerCase().includes('severe'))) {
-        return 'Severe';
-    } else if (duration > 3 || symptoms.length > 4) {
-        return 'Moderate';
-    }
+    if (age > 65 || duration > 7 || symptoms.some(s => s.toLowerCase().includes('severe'))) return 'Severe';
+    if (duration > 3 || symptoms.length > 4) return 'Moderate';
     return 'Mild';
 }
 
