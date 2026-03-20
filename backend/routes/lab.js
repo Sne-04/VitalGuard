@@ -1,7 +1,6 @@
 const express = require('express');
 const multer = require('multer');
-const pdfParse = require('pdf-parse');
-const parsePDF = typeof pdfParse === 'function' ? pdfParse : pdfParse.default;
+const { PdfReader } = require('pdfreader');
 const Anthropic = require('@anthropic-ai/sdk');
 const { protect } = require('../middleware/auth');
 const supabase = require('../config/supabase');
@@ -21,14 +20,39 @@ const upload = multer({
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// Helper: extract text from PDF buffer using pdfreader
+function extractTextFromPDF(buffer) {
+    return new Promise((resolve, reject) => {
+        let text = '';
+        new PdfReader().parseBuffer(buffer, (err, item) => {
+            if (err) {
+                reject(err);
+            } else if (!item) {
+                // End of file
+                resolve(text);
+            } else if (item.text) {
+                text += item.text + ' ';
+            }
+        });
+    });
+}
+
 router.post('/analyze', protect, upload.single('report'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ success: false, message: 'No file uploaded' });
         }
 
-        const pdfData = await parsePDF(req.file.buffer);
-        const extractedText = pdfData.text;
+        let extractedText;
+        try {
+            extractedText = await extractTextFromPDF(req.file.buffer);
+        } catch (parseErr) {
+            console.error('PDF parse error:', parseErr);
+            return res.status(400).json({
+                success: false,
+                message: 'Failed to parse the PDF. Please ensure it is a valid, non-scanned PDF file.'
+            });
+        }
 
         if (!extractedText || extractedText.trim().length < 10) {
             return res.status(400).json({
